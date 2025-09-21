@@ -1,0 +1,94 @@
+# @package _global_
+
+## Experiment for training a Residual Quantization Variational AutoEncoder (RQ-VAE)
+## model on pre-computed embeddings text embeddings of Amazon P5 items.
+
+defaults:
+  - override /trainer: ddp
+  - override /data_loading: third_party/amazon_p5_items_embeds_train
+  - override /model: experimental/rqvae
+  - override /logger: csv
+  - override /optim: adagrad
+
+# pass checkpoint path here to resume training from a checkpoint
+# ckpt_path:
+
+tags: ["amazon-assign-ids-train"]
+seed: 42
+paths:
+  data_dir: ./data/amazon_no_cap/beauty
+embedding_model: flan-t5-xl  # The model that produced the embeddings to cluster
+                              # This determines the path to the embeddings that will be used
+
+trainer:
+  val_check_interval: 100000000  # We skip validation for now
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
+  max_steps: 15000
+  accumulate_grad_batches: 1
+  strategy: ddp_find_unused_parameters_true
+
+optim:
+  optimizer:
+    lr: !!float 0.001
+    weight_decay: !!float 0.0  # Weight decay causes codebook embeddings to go to zero
+  scheduler:
+    min_ratio: !!float 0.01
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "checkpoint_{epoch:03d}_{step:06d}"
+    monitor: "train/loss"
+    mode: "min"
+    auto_insert_metric_name: False
+    every_n_train_steps: 1000
+    save_last: true
+  early_stopping: null
+
+data_loading:
+  features_config:
+    features:
+      - name: id  # encoded item id. Type: tf.SparseTensor, Shape:(1,)
+        num_placeholder_tokens: 0
+        is_item_ids: true
+        embeddings:
+          _target_: torch.load
+          _args_:
+            - _target_: src.utils.file_utils.open_local_or_remote
+              file_path: ${paths.data_dir}/item_semantic_embeddings/${embedding_model}.pt
+              mode: rb # R for read B for binary
+        type:
+          _target_: torch.__dict__.get
+          _args_:
+            - int32
+  dataset_config:
+    dataset:
+      embedding_map:
+        id: ${data_loading.features_config.features[0].embeddings}
+  datamodule:
+    train_dataloader_config:
+      data_folder: ${paths.data_dir}/items
+      num_workers: 12
+      batch_size_per_device: 2048  # we need to use a large batch size for good performance
+                                   # batch size up to 256 with 8 devices did not work well for amazon beauty
+                                   # we hypothesize that batch_size_per_device * num_devices should be approximately the full dataset size
+    # The validation and test data are the same as the training data
+    # The point of the evaluation is to see how well a fixed model can assign semantic
+    # IDs to the full data, since during training we only have batch-wise feedback on
+    # transient versions of the model.
+    val_dataloader_config:
+      data_folder: ${paths.data_dir}/items
+      num_workers: 2
+      batch_size_per_device: 256
+    test_dataloader_config:
+      data_folder: ${paths.data_dir}/items
+      num_workers: 2
+      batch_size_per_device: 256
+
+# We do not use an evaluator, but we need to override the default evaluator to avoid an instantiation error
+eval:
+  evaluator:
+      placeholder_token_buffer: 0
+
+test: false

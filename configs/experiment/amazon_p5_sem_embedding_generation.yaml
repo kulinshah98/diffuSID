@@ -1,0 +1,45 @@
+# @package _global_
+
+## Experiment for infering semantic embeddings from a pre-trained model.
+
+defaults:
+  - override /data_loading: third_party/amazon_p5_items_text_inference
+  - override /model: semantic_embedding_inference
+
+# We do not specify a checkpoint path because we load a pre-trained model from HuggingFace
+ckpt_path: null
+
+tags: ["amazon", "semantic-embeddings-inference"]
+seed: 42
+
+embedding_model: flan-t5-xxl
+dataset: beauty
+paths:
+  data_dir: ./data/amazon/${dataset}/items
+
+trainer:
+  accelerator: gpu
+  devices: -1
+  precision: 32  # full precision for inference
+
+callbacks:
+  bq_writer:
+    # we use a relatively small flush frequency because the embedding dimension may be large
+    flush_frequency: 64
+    # specify the table name to write to
+    table_id: amazon_p5_${dataset}_${embedding_model}_embeddings_test
+    schema:
+      - _target_: google.cloud.bigquery.SchemaField
+        name: item_id
+        field_type: INTEGER
+      - _target_: google.cloud.bigquery.SchemaField
+        name: embedding
+        field_type: FLOAT
+        mode: REPEATED
+
+data_loading:
+  datamodule:
+    predict_dataloader_config:
+      data_folder: ${paths.data_dir}
+      num_workers: 2
+      batch_size_per_device: 32

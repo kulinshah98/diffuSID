@@ -1,0 +1,9 @@
+## T5 Casual Encoder: Loads a T5 Casual Encoder defined in src.model.module.hf_t5_causal_encoder.T5CausalEncoderModel
+## It's is a wrapper on Huggingface's T5EncoderModel with additional causal masking in the self attention
+
+
+defaults:
+  - t5_encoder
+  - _self_
+
+_target_: src.models.modules.huggingface.t5_causal_encoder.T5CausalEncoderModel

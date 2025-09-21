@@ -1,0 +1,10 @@
+loss_function:
+  _target_: src.experimental.components.loss_functions.LMRecLossWithWarmup
+  contrastive_tau: !!float 0.05
+  normalize: true
+  ignore_index: 50256  # ignore padding token in loss calculation. TODO: get this automatically from tokenizer
+  lm_loss_weight: 1.0
+  rec_loss_weight_start: 0.1
+  rec_loss_weight_end: 1.0
+  increase_weight_steps: 5000
+  increase_weight_factor: 1.5

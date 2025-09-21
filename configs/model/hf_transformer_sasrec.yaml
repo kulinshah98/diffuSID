@@ -1,0 +1,32 @@
+## Loads a SASRec model.
+## Paper reference: Hou et al. 2018, https://arxiv.org/pdf/1808.09781
+
+
+defaults:
+  - hf_transformer
+  - override huggingface_model: gpt-scratch  # we use a GPT2-style model becuase it uses causal attention and trainable position embeddings, as in the SASRec paper
+  - _self_
+
+_target_: src.models.modules.huggingface.seq_rec_transformer_module.SeqRecTransformerModule
+
+huggingface_model:
+  config:
+    vocab_size: ???  # set this to the number of unique items in your dataset in the experiment config
+    n_positions: ${data_loading.train_dataloader_config.dataloader.sequence_length}  # max sequence length
+    n_ctx: ${data_loading.train_dataloader_config.dataloader.sequence_length}  # max sequence length
+    n_embd: 128
+    n_head: 1
+    n_layer: 2
+    ## The configs commented below are the default configs for the original SASRec paper.
+    ## However, we saw they gave worse performance than the default GPT2 configs.
+    # activation_function: "relu"
+    # resid_pdrop: 0.5
+    # embd_pdrop: 0.5
+    # attn_pdrop: 0.0
+
+postprocessor:
+  _target_: torch.nn.Identity
+
+feature_to_model_input_map:
+  sequence_data: input_ids  # TODO: the key here is dataset-specific, figure out a way to automatically set this based on the dataset
+                            # sequence_data is the key for Amazon P5 datasets

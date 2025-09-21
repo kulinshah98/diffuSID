@@ -1,0 +1,7 @@
+loss_function:
+  _target_: src.experimental.components.loss_functions.LMRecLoss
+  contrastive_tau: !!float 0.05
+  normalize: true
+  ignore_index: 50256
+  lm_loss_weight: 1.0
+  rec_loss_weight: 1.0

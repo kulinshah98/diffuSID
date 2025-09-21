@@ -1,0 +1,21 @@
+## Loads a GPT-2 decoder model from HuggingFace with randomly initialized weights. This version
+## supports flash attention if you are training on fp16 or bfloat16 and GPUs that support it.
+## Flash attention is useful if you need to increase sequence length.
+
+_target_: transformers.AutoModel.from_config
+config:
+  _target_: transformers.GPT2Config
+  vocab_size: 50257
+  n_positions: 2048
+  n_ctx: 2048
+  n_embd: 512
+  n_head: 8
+  n_layer: 6
+  eos_token_id: "<|endoftext|>"
+  # You need to be training on fp16 or bfloat16 for this to work. It also only works on some GPUs like A100s.
+  # The torch._dict_.get function is a hack since hydra has a hard time loading torch dtypes.
+  attn_implementation: flash_attention_2
+  torch_dtype:
+    _target_: torch.__dict__.get
+    _args_:
+      - float16

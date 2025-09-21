@@ -1,0 +1,74 @@
+# @package _global_
+
+## Experiment for training a SASRec model on an Amazon P5 dataset.
+
+defaults:
+  - override /trainer: ddp
+  - override /callbacks: default
+  - override /model: hf_transformer_sasrec
+  - override /data_loading: third_party/amazon_p5_sparse_ids_train
+  - override /logger: csv
+  - override /eval: retrieval
+  - override /optim: default
+  - override /loss: in_batch_contrastive_loss  # Note: original SASRec uses BPR loss
+
+tags: ["amazon", "sasrec"]
+seed: 42
+
+paths:
+  data_dir: ./data
+
+dataset: amazon/beauty
+# dataset: amazon/sports
+# dataset: amazon/toys
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "checkpoint_recall10_{epoch:03d}_{step:06d}"
+    monitor: "val/recall@10"
+    mode: "max"
+    auto_insert_metric_name: False
+    every_n_train_steps: 5001
+
+trainer:
+  max_steps: 50050
+  log_every_n_steps: 500
+  val_check_interval: 2500
+  num_sanity_val_steps: 0
+  accumulate_grad_batches: 1
+
+model:
+  huggingface_model:
+    config:
+      vocab_size: 12103 # beauty, + 2 for placeholder tokens
+      # vocab_size: 18359 # sports
+      # vocab_size: 11926 # toys
+  feature_to_model_input_map:
+    sequence_data: input_ids
+
+optim:
+  optimizer:
+    lr: 0.0001
+
+data_loading:
+  train_dataloader_config:
+    dataloader:
+      data_folder: ${paths.data_dir}/${dataset}/training
+      num_workers: 4
+      batch_size_per_device: 128
+  val_dataloader_config:
+    dataloader:
+      data_folder: ${paths.data_dir}/${dataset}/evaluation
+      num_workers: 4
+      batch_size_per_device: 128
+  test_dataloader_config:
+    dataloader:
+      data_folder: ${paths.data_dir}/${dataset}/testing
+      num_workers: 4
+      batch_size_per_device: 128
+
+eval:
+  evaluator:
+    should_sample_negatives_from_vocab: False
+    placeholder_token_buffer: ${data_loading.train_dataloader_config.dataloader.dataset_config.num_placeholder_tokens_map.sequence_data}

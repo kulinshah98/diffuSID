@@ -1,0 +1,8 @@
+## Config file for preprocessing datasets from Amazon Reviews 2023 for the Magazine_Subscriptions domain.
+## Dataset details: https://amazon-reviews-2023.github.io/index.html
+defaults:
+  - amazon_default
+  - _self_
+
+domains:   # product domains to extract from the dataset, please refer to the Amazon Reviews 2023 paper for more details
+  - Magazine_Subscriptions

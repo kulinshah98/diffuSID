@@ -1,0 +1,19 @@
+## T5 Encoder Model: Loads a T5 encoder model from Hugging Face.
+
+
+_target_: transformers.T5EncoderModel
+config:
+  _target_: transformers.T5Config
+  vocab_size:
+    _target_: src.utils.pbtxt_utils.get_vocabulary_for_feature_from_pbtxt
+    pbtxt_file_path: null
+    # TODO (lneves): Think of how to avoid repeating it here without creating a dependency
+    # between model and data configs.
+    feature_name: sequencefeature_unified_static__creator_id__categorical_vocab
+    placeholder_token_buffer: 100
+  d_model: 32
+  num_heads: 8
+  dropout_rate: 0.15
+  d_ff: 32
+  d_kv: 32
+  num_layers: 2

@@ -1,0 +1,20 @@
+## Loads a TIGER  encoder-deocder model.
+## We skipped aggregator and postprocessor as they are not needed in this case
+## the decoder is our aggregator and postprocessor
+
+defaults:
+  - hf_transformer
+  - huggingface_model/t5_decoder@decoder
+  - _self_
+
+_target_: src.models.modules.semantic_id.tiger_generation_model.SemanticIDEncoderDecoder
+num_hierarchies: ???
+num_user_bins: ???
+
+# removing these two as we dont need them
+# the aggregator and post_processing in this case is our decoder
+aggregator: ~
+postprocessor: ~
+
+codebooks: ${data_loading.train_dataloader_config.dataloader.dataset_config.semantic_id_map.sequence_data}
+evaluator: ${eval.evaluator}

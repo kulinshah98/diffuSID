@@ -1,0 +1,5 @@
+## Loads a T5 casual encoder model where the self attention layers have causal masking.
+
+defaults:
+  - hf_transformer
+  - override huggingface_model: t5_causal_encoder

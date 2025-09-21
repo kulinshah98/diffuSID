@@ -1,0 +1,202 @@
+# @package _global_
+
+## Example training experiment with the training using SID
+
+defaults:
+  - override /trainer: ddp
+  - override /data_loading: third_party/amazon_p5_sem_ids_train
+  - override /logger: csv
+  - override /model: hf_transformer_semantic_id
+  - override /eval: sid_retrieval
+  - override /loss: cross_entropy_loss
+  - override /callbacks: default
+  - _self_
+
+
+tags: ["amazon", "tiger"]
+seed: 42
+
+dataset_name: ml20m
+dataset: ${dataset_name}
+
+reduce_ratio: 0.0
+
+paths:
+  data_dir: ./data/movielens/${dataset}/text
+  #data_dir: amazon_reduced/drop${drop_ratio}/${dataset}
+
+
+data_loading:
+  train_dataloader_config:
+    dataloader:
+      data_folder: ${paths.data_dir}/testing
+      batch_size_per_device: 128
+      dataset_config:
+        semantic_id_map:
+          sequence_data:
+            _target_: torch.load
+            _args_:
+              - _target_: src.utils.file_utils.open_local_or_remote
+                #file_path: flan-t5-xxl_3_256_sid.pt
+                # file_path: ./data/movielens/${dataset}/sids/kcore5/flan-t5-xxl_rkmeans_3_256_seed42.pt
+                file_path: ./data/movielens/ml20m/sids/kcore1/text/flan-t5-xxl_rkmeans_4_256_seed42.pt
+
+                # file_path: flan-t5-xxl_rkmeans_3_256_seed42.pt
+                #file_path: flan-t5-xxl_dim256_tau0.2_noise0.01_emb.pt
+                mode: rb # R for read B for binary
+        feature_map:
+          item_id: sequence_data
+          user_id: user_id
+        preprocessing_functions:
+          - _target_: src.data.loading.components.pre_processing.filter_features_to_consider
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_to_dense_numpy_array
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_fields_to_tensors
+            _partial_: True
+          - _target_: src.experimental.data.loading.components.pre_processing.drop_last_token
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            drop: 2
+          - _target_: src.data.loading.components.pre_processing.map_sparse_id_to_semantic_id
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            num_hierarchies: ${model.num_hierarchies}
+      timeout: 600
+
+  val_dataloader_config:
+    dataloader:
+      data_folder: ${paths.data_dir}/testing
+      num_workers: 1
+      batch_size_per_device: 8
+      timeout: 600
+      dataset_config:
+        feature_map:
+          item_id: sequence_data
+          user_id: user_id
+        preprocessing_functions:
+          - _target_: src.data.loading.components.pre_processing.filter_features_to_consider
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_to_dense_numpy_array
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_fields_to_tensors
+            _partial_: True
+          - _target_: src.experimental.data.loading.components.pre_processing.drop_last_token
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            drop: 1
+          - _target_: src.data.loading.components.pre_processing.map_sparse_id_to_semantic_id
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            num_hierarchies: ${model.num_hierarchies}
+  test_dataloader_config:
+    # dataloader:
+    #   data_folder: ${paths.data_dir}/testing
+    #   num_workers: 1
+    #   batch_size_per_device: 32
+    #   timeout: 600
+    #   dataset_config:
+    #     feature_map:
+    #       item_id: sequence_data
+    #       user_id: user_id
+    dataloader:
+      data_folder: ${paths.data_dir}/testing
+      num_workers: 1
+      batch_size_per_device: 8
+      timeout: 600
+      dataset_config:
+        feature_map:
+          item_id: sequence_data
+          user_id: user_id
+        preprocessing_functions:
+          - _target_: src.data.loading.components.pre_processing.filter_features_to_consider
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_to_dense_numpy_array
+            _partial_: True
+          - _target_: src.data.loading.components.pre_processing.convert_fields_to_tensors
+            _partial_: True
+          - _target_: src.experimental.data.loading.components.pre_processing.drop_last_token
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            drop: 0
+          - _target_: src.data.loading.components.pre_processing.map_sparse_id_to_semantic_id
+            _partial_: True
+            features_to_apply:
+              - sequence_data
+            num_hierarchies: ${model.num_hierarchies}
+
+model:
+  # below are hyper-parameters recommended by TIGER
+  huggingface_model:
+    config:
+      vocab_size: 256
+      d_model: 128
+      num_heads: 6
+      d_ff: 1024
+      d_kv: 64
+      num_layers: 4
+  feature_to_model_input_map:
+    sequence_data: input_ids
+    user_id: user_id
+  decoder:
+    config:
+      num_layers: 4
+  num_hierarchies: 5
+  num_user_bins: 0
+  mlp_layers: 2 # bloating the MLP layers to 2 to match the number of parameters reported in TIGER
+
+
+trainer:
+  max_steps: !!int 320000
+  log_every_n_steps: 100
+  val_check_interval: 400 #800
+  num_sanity_val_steps: 0
+  accumulate_grad_batches: 4
+  min_epochs: 0 # setting this to 0 to unblock early stopping,
+  devices: -1
+
+optim:
+  optimizer:
+    lr: !!float 1e-3
+    weight_decay: !!float 1e-4
+
+
+callbacks:
+  # model_checkpoint:
+  #   #dirpath: ${paths.output_dir}/checkpoints
+  #   dirpath: ${hydra:runtime.output_dir}/checkpoints
+  #   filename: "checkpoint_recall5_{epoch:03d}_{step:06d}"
+  #   monitor: "val/recall@5"
+  #   mode: "max"
+  #   auto_insert_metric_name: False
+  #   every_n_train_steps: 400
+  model_checkpoint:
+    _target_: src.components.training_callbacks.ModelCheckpointToGCS
+    dirpath: ${hydra:runtime.output_dir}/checkpoints
+    filename: "checkpoint_recall5_{epoch:03d}_{step:06d}"
+    monitor: "val/recall@5"
+    mode: "max"
+    verbose: True # verbosity mode
+    save_last: null # additionally always save an exact copy of the last checkpoint to a file last.ckpt
+    save_top_k: 1 # save k best models (determined by above metric)
+    # mode: "min" # "max" means higher metric value is better, can be also "min"
+    auto_insert_metric_name: False # when True, the checkpoints filenames will contain the metric name
+    save_weights_only: False # if True, then only the model’s weights will be saved
+    every_n_train_steps: 800 # number of training steps between checkpoints
+    train_time_interval: null # checkpoints are monitored at the specified time interval
+    every_n_epochs: null # number of epochs between checkpoints
+    save_on_train_epoch_end: null # whether to run checkpointing at the end of the training epoch or the end of validation
+    upload_after_n_checkpoints: 32 # number of checkpoints between uploads to gcs
+    gcs_path: ${paths.output_dir}/checkpoints # path to save the model to gcs
+  early_stopping:
+    monitor: ${callbacks.model_checkpoint.monitor}
+    patience: 10
+    mode: ${callbacks.model_checkpoint.mode}
+    strict: true
+    check_on_train_epoch_end: false
+    verbose: true

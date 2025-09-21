@@ -1,0 +1,20 @@
+## ------------------------------------------------------------------------------
+## GPT2 tokenizer configuration.
+## ------------------------------------------------------------------------------
+## Configurations for GPT2 from HuggingFace.
+
+tokenizer:
+  _target_: transformers.AutoTokenizer.from_pretrained
+  pretrained_model_name_or_path: gpt2
+  padding_side: right   # note: the original implementation uses left padding, but GPT models should use right padding
+  truncation_side: left  # truncate on the left to drop older events
+  add_prefix_space: True
+
+max_length: 2048
+padding: max_length
+truncation: true
+special_tokens:
+  eos_token: <|endoftext|>
+  pad_token: <|endoftext|>
+add_special_tokens: true
+postprocess_eos_token: true

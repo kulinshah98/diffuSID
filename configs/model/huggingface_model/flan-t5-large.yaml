@@ -1,0 +1,5 @@
+## Loads a Flan-T5-large model model from Hugging Face.
+
+_target_: transformers.T5EncoderModel.from_pretrained
+pretrained_model_name_or_path:
+  google/flan-t5-large

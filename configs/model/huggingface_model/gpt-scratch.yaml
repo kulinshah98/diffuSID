@@ -1,0 +1,12 @@
+## Loads a GPT-2 decoder model from HuggingFace with randomly initialized weights.
+
+_target_: transformers.AutoModel.from_config
+config:
+  _target_: transformers.GPT2Config
+  vocab_size: 50257
+  n_positions: 2048
+  n_ctx: 2048  # dimension of the causal attention mask, should be equal to n_positions
+  n_embd: 512
+  n_head: 8
+  n_layer: 6
+  eos_token_id: "<|endoftext|>"

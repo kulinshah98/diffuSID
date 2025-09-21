@@ -1,0 +1,101 @@
+## Default Config file for preprocessing datasets from Amazon Reviews 2023.
+## This config is meant to be extended by other config files for specific versions of the Amazon dataset.
+## In particular, the user must specify the domains parameter in the extending config file.
+## Dataset details: https://amazon-reviews-2023.github.io/index.html
+
+# function called by main script to create the dataset
+# note that if using create_seq_iitd_dataset.create_dataset, the only supported
+# scheduler is dask
+prepare_data_fn:
+  _target_: src.data.preparation.third_party.create_seq_iitd_dataset.create_dataset
+  _partial_: true
+
+# product domains to extract from the dataset
+# please refer to https://amazon-reviews-2023.github.io/index.html for the list of all domains
+domains: ???
+
+kcore: 1        # filter out users and items with fewer than kcore interactions from the dataset
+min_interaction_text_len: 0  # only include interactions with total text features longer than this many characters
+                             # we set to 0 because we do not consider interaction text features in this version
+                             # note that if interaction_text_cols is not specified, then this value is ignored anyway
+min_item_text_len: 30  # only include items with total text features longer than this many characters
+                       # we follow the Amazon Reviews 2023 paper in setting this to 30
+split: "LOO"    # leave-one-out splitting, currently this is the only supported split type
+                # TODO(liam): implement temporal splitting
+
+# columns besides text features to read from interactions metadata
+# note that user_id and parent_asin are required; other columns are optional
+interaction_cols:
+  - user_id
+  - parent_asin     # item id
+  - rating          # user's rating of the item
+  - timestamp       # time of the interaction
+
+# columns besides text features to save from items metadata
+item_cols:
+  - parent_asin
+# uncomment below to save the domain_id; this will add a new column to the dataset since domain_id is not already in the dataset
+  # - domain_id           # domain_id is the domain, e.g. "Magazine_Subscriptions", encoded as an integer
+                          # since we are only using one domain, this is unnecessary
+
+# columns of item metadata saved and encoded as text features
+item_text_cols:
+  - title
+  - description
+  - features
+# uncomment below to save the following columns of item metadata as text features
+  # - categories    # domains under which the item is categorized
+                    # we recommend not saving this as a text feature unless you are using many domains
+                    # otherwise, most items will have the same categories, and this will clog the context with redundant information
+  # - domain        # if uncommented, the domain name, e.g. "Magazine_Subscriptions", will be saved as a text feature
+                    # however, note that `categories` already contains the domain name
+                    # just like `categories`, we recommend not saving this unless you are using many domains
+  # - main_category
+  # - store
+  # - subtitle
+
+interaction_text_cols: []
+# uncomment below, and remove "[]" above, to save the following columns of interaction metadata as text features
+  # - title   # title of user's review of the item
+  # - text    # user's review of the item
+
+chunksize: 100  # Max size in MB of partition in the saved datasets.
+                # Should be 100-500MB to allow for each partition to be loaded into
+                # memory, but not too small to avoid overhead of loading many small
+                # partitions. For reference:
+                # https://docs.dask.org/en/stable/dataframe-best-practices.html#repartition-to-reduce-overhead
+
+# NOTE: none of the configs below should be changed for any version of the Amazon dataset
+
+# dataset paths on Huggingface Datasets
+hf_ds_path: McAuley-Lab/Amazon-Reviews-2023
+hf_interactions_ds_name: raw_review
+hf_item_ds_name: raw_meta
+hf_split: full
+
+# local directory in which to save raw and preprocessed data
+local_save_path_raw: ${paths.data_dir}/amazon/raw
+local_save_path_preprocessed: ${paths.data_dir}/amazon/preprocessed
+
+# remote directory in which to save raw and preprocessed data
+remote_save_path: ${paths.remote_data_dir}/amazon
+
+# mapping from generic column names to the column names in the raw dataset
+col_names:
+  user_id: user_id
+  user_id_encoded: user_id_encoded
+  item_id: parent_asin
+  item_id_encoded: parent_asin_encoded
+  rating: rating
+  timestamp: timestamp
+  domain_id: domain_id
+  domain: domain
+  interaction_text: interaction_text
+  item_text: item_text
+  sequence_length: sequence_length
+
+save_items: false       # whether to save the items metadata dataframe
+                        # we set to false because the item metadata is already stored in the preprocessed dataset of user interaction logs
+save_encodings: false   # whether to save the mappings from raw ids to encoded ids, for both users and items
+                        # we set to false because in most cases we do not need the raw ids
+                        # note that the encoded ids, but not raw ids, are saved in the preprocessed dataset

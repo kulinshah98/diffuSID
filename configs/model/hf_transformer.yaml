@@ -1,0 +1,48 @@
+## Loads a T5 encoder model from Hugging Face.
+
+defaults:
+  - huggingface_model: t5_encoder
+  - _self_
+
+_target_: src.models.internal.modules.huggingface.transformer_module.TransformerModule
+
+feature_to_model_input_map:
+  sequencefeature_unified_static__creator_id__categorical_vocab: input_ids
+
+postprocessor:
+  _target_: src.models.components.network_blocks.mlp.MLP
+  input_dim: 32
+  hidden_dim_list:
+    - 32
+  output_dim: 32
+  activation:
+    _target_: torch.nn.ReLU
+    _partial_: true
+
+# decoder:
+#   _target_: torch.nn.Embedding
+#   num_embeddings: ${..huggingface_model.config.vocab_size}
+#   embedding_dim: ${..huggingface_model.config.d_model}
+
+aggregator:
+  _target_: src.models.components.network_blocks.embedding_aggregator.EmbeddingAggregator
+  aggregation_strategy:
+    _target_: src.models.components.network_blocks.aggregation_strategy.LastAggregation
+
+loss_function: ${loss.loss_function}
+
+optimizer: ${optim.optimizer}
+
+scheduler: ${optim.scheduler}
+
+evaluator: ${eval.evaluator}
+
+weight_tying: true
+# for some models, lightning optimizer can be disabled for faster training.
+# compile model for faster training with pytorch 2.0
+compile: false
+
+# If we pass a training_loop_function, we disable the default optimization loop from lightning
+# trainining_loop_function:
+#   _target_: src.models.components.training_loop_functions.default_optimization_loop
+#   _partial_: true

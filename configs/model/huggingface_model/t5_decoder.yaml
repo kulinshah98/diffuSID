@@ -1,0 +1,21 @@
+## T5 Decoder Model: Loads a T5 decoder model from Hugging Face.
+## It replicates the model architecture of the T5 encoder model, but with a different configuration.
+## i.e., is_decoder: True and is_encoder_decoder: False
+
+
+_target_: transformers.models.t5.modeling_t5.T5Stack
+config:
+  _target_: transformers.models.t5.configuration_t5.T5Config
+  vocab_size: ${model.huggingface_model.config.vocab_size}
+  d_model:  ${model.huggingface_model.config.d_model}
+  num_heads: ${model.huggingface_model.config.num_heads}
+  dropout_rate: 0.15
+  d_ff:  ${model.huggingface_model.config.d_ff}
+  d_kv: ${model.huggingface_model.config.d_kv}
+  num_layers: ???
+  is_decoder: True
+  is_encoder_decoder: False
+embed_tokens:
+    _target_: torch.nn.Embedding
+    num_embeddings: ${model.huggingface_model.config.vocab_size}
+    embedding_dim: ${model.huggingface_model.config.d_model}

@@ -1,0 +1,132 @@
+# @package _global_
+
+## Experiment configuration for training experiment with the Discrete Diffusion model.
+
+defaults:
+  - override /trainer: ddp
+  - override /model: experimental/discrete_diffusion_train_distilbert
+  - override /data_loading: experimental/discrete_diffusion_sem_ids
+  - override /eval: sid_retrieval
+  - override /optim: adamw
+  - override /callbacks: default
+  - _self_
+
+tags: ["discrete_diffusion"]
+seed: 7
+
+embedding_dim: 64 # Embedding dimension for the model
+use_token_type_embedding: false # Whether to use token type embedding
+sid_data_path: ./data/amazon/beauty/sids/flan-t5-xxl_rkmeans_3_256_seed43.pt
+data_freqs_path: ./data/beauty_train_data.pkl
+# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_3_256_seed43.pt
+# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_4_256_seed43.pt
+# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_5_256_seed43.pt
+
+
+data_loading:
+  train_dataloader_config:
+    dataloader:
+      batch_size_per_device: 128
+      sequence_length: 120  # Maximum sequence length     
+      dataset_config:
+        semantic_id_map:
+          sequence_data:
+            _target_: torch.load
+            _args_:
+              - _target_: src.utils.file_utils.open_local_or_remote
+                file_path: ${sid_data_path}
+                mode: rb # R for read B for binary
+
+  val_dataloader_config:
+    dataloader:
+      batch_size_per_device: 256
+  test_dataloader_config:
+    dataloader:
+      batch_size_per_device: 256
+
+# Callbacks configuration for checkpointing
+callbacks:
+  model_checkpoint:
+    _target_: src.components.training_callbacks.ModelCheckpointToGCS
+    dirpath: ${paths.output_dir}/checkpoints # directory to save the model file
+    filename: "discrete-diffusion-{step:06d}-{val/recall@k10@targetp100@seqlen100:.4f}" # checkpoint filename
+    monitor: "val/recall@k10@targetp100@seqlen100" # name of the logged metric which determines when model is improving
+    verbose: True # verbosity mode
+    save_last: null # additionally always save an exact copy of the last checkpoint to a file last.ckpt
+    save_top_k: 1 # save k best models (determined by above metric)
+    mode: "max" # "max" means higher metric value is better, can be also "min"
+    auto_insert_metric_name: True # when True, the checkpoints filenames will contain the metric name
+    save_weights_only: False # if True, then only the model's weights will be saved
+    every_n_train_steps: null # number of training steps between checkpoints
+    train_time_interval: null # checkpoints are monitored at the specified time interval
+    every_n_epochs: null # number of epochs between checkpoints
+    save_on_train_epoch_end: null # whether to run checkpointing at the end of the training epoch or the end of validation
+    upload_after_n_checkpoints: 3 # number of checkpoints between uploads to gcs
+    gcs_path: ${paths.output_dir}/checkpoints # path to save the model to gcs
+  
+  # model_checkpoint:
+  #   _target_: src.components.training_callbacks.ModelCheckpointToGCS
+  #   gcs_path: ${paths.output_dir}/checkpoints
+  #   dirpath: ${paths.output_dir}/checkpoints  # or use GCS path: "gs://your-bucket/checkpoints/dreamrec"
+  #   filename: "discrete-diffusion-{step:06d}-{val/recall@5:.4f}"
+  #   monitor: "val/recall@5"  # Monitor recall@5 metric
+  #   mode: "max"  # Higher recall@5 is better
+  #   save_top_k: 3  # Keep the best 3 checkpoints
+  #   save_last: null  # Also save the most recent checkpoint
+  #   verbose: true
+  #   auto_insert_metric_name: false  # Since we're already including the metric in filename
+  #   every_n_train_steps: 2500  # Save checkpoint every 2.5k steps
+  #   save_on_train_epoch_end: false  # Save after validation, not training
+
+  early_stopping:
+    monitor: ${callbacks.model_checkpoint.monitor}
+    patience: 10
+    mode: ${callbacks.model_checkpoint.mode}
+    strict: true
+    check_on_train_epoch_end: false
+    verbose: true
+
+loss:
+  loss_function:
+    _target_: src.components.loss_functions.FullBatchCrossEntropyLoss
+    normalize: false
+    contrastive_tau: 1.0
+
+# Dataset settings
+paths:
+  data_dir: ./data/amazon_no_cap/beauty 
+
+
+# Trainer settings
+trainer:
+  max_steps: 300000
+  precision: 32-true  # Keep 32-bit for stability
+  log_every_n_steps: 15000
+  val_check_interval: 20000
+  num_sanity_val_steps: 0
+  gradient_clip_val: 1.0
+  limit_val_batches: 100000  # Limit validation to all batches
+  # limit_test_batches: 10  # Limit test to 12 batches max
+  accumulate_grad_batches: 8
+
+optim:
+  optimizer:
+    lr: !!float 1e-3
+    weight_decay: !!float 1e-3
+
+# Evaluator settings
+eval:
+  evaluator:
+    _target_: src.components.eval_metrics.MultiSIDRetrievalEvaluator
+    top_k_list:
+      - !!int 5
+      - !!int 10
+
+    percentage_list:
+      - !!int 100
+
+    seq_len_list:
+      - !!int 100
+
+    
+

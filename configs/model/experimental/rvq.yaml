@@ -1,0 +1,45 @@
+## Configurations for a Residual Vector Quantization model.
+## This model uses pre-computed embeddings as input.
+
+defaults:
+  - _self_
+
+_target_: src.experimental.modules.clustering.residual_quantization.ResidualQuantization
+
+track_residuals: true
+verbose: true
+
+train_layer_wise: true
+normalize_residuals: true
+
+input_dim: 2048  # The input dimension of the embeddings
+
+n_layers: 3
+init_buffer_size: 3072
+quantization_layer:
+  _target_: src.experimental.modules.clustering.vector_quantization.VectorQuantization
+  n_clusters: 256
+  n_features: ${model.input_dim}
+  distance_function:
+    _target_: src.components.distance_functions.SquaredEuclideanDistance
+  quantization_strategy:
+    _target_: src.experimental.components.quantization_strategies.STEQuantization
+    distance_function: ${model.quantization_layer.distance_function}
+    compute_reconstruction_loss_embeddings: false
+  initializer:
+    _target_: src.experimental.components.clustering_initializers.KMeansPlusPlusInitInitializer
+    n_clusters: ${model.quantization_layer.n_clusters}
+    initialize_on_cpu: false
+    distance_function: ${model.quantization_layer.distance_function}
+  init_buffer_size: ${model.init_buffer_size}
+  loss_function:
+    _target_: src.experimental.components.loss_functions.BetaQuantizationLoss
+    beta: 0.25
+
+optimizer: ${optim.optimizer}
+scheduler: null
+quantization_layer_list: null
+
+training_loop_function:
+  _target_: src.experimental.components.training_loop_functions.scale_loss_by_world_size_for_initialization_training_loop
+  _partial_: true

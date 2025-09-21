@@ -1,0 +1,64 @@
+# @package _global_
+
+## Experiment for infering cluster IDs from Amazon P5 text embeddings using a
+## pre-trained Residual Vector Quantization model.
+
+defaults:
+  - override /data_loading: third_party/amazon_p5_items_embeds_inference
+  - override /model: experimental/rvq
+  - override /logger: csv
+
+# you must specify the checkpoint path to run inference
+ckpt_path: ???
+
+tags: ["amazon-assign-ids-inference"]
+seed: 42
+dataset: beauty  # The dataset to use for inference, e.g., beauty, sports, etc.
+paths:
+  data_dir: ./data/amazon/${dataset}
+embedding_model: flan-t5-xl  # The model that produced the embeddings to cluster
+                              # This determines the path to the embeddings that will be used
+
+trainer:
+  accelerator: gpu
+  devices: -1
+
+data_loading:
+  features_config:
+    features:
+      - name: id  # encoded item id. Type: tf.SparseTensor, Shape:(1,)
+        num_placeholder_tokens: 0
+        is_item_ids: true
+        embeddings:
+          _target_: torch.load
+          _args_:
+            - _target_: src.utils.file_utils.open_local_or_remote
+              file_path: ${paths.data_dir}/item_semantic_embeddings/${embedding_model}.pt
+              mode: rb # R for read B for binary
+        type:
+          _target_: torch.__dict__.get
+          _args_:
+            - int32
+  dataset_config:
+    dataset:
+      embedding_map:
+        id: ${data_loading.features_config.features[0].embeddings}
+  datamodule:
+    predict_dataloader_config:
+      data_folder: ${paths.data_dir}/items
+      num_workers: 2
+      batch_size_per_device: 128
+
+callbacks:
+  bq_writer:
+    flush_frequency: 512
+    # specify the table name to write to
+    table_id: amazon_p5_${dataset}_${embedding_model}_rvq_${model.n_layers}_${model.quantization_layer.n_clusters}_test
+    schema:
+      - _target_: google.cloud.bigquery.SchemaField
+        name: item_id
+        field_type: INTEGER
+      - _target_: google.cloud.bigquery.SchemaField
+        name: cluster_ids
+        field_type: INTEGER
+        mode: REPEATED

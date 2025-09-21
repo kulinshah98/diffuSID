@@ -1,0 +1,16 @@
+## Loads a pretrained GPT-2 decoder model from HuggingFace.
+
+
+_target_: transformers.AutoModel.from_pretrained
+pretrained_model_name_or_path: gpt2
+config:
+  _target_: transformers.AutoConfig.from_pretrained
+  pretrained_model_name_or_path: gpt2
+  vocab_size: 50257
+  n_positions: 2048
+  n_ctx: 2048  # dimensionality of the causal mask, should be same as n_positions
+  n_embd: 512
+  n_head: 8
+  n_layer: 12
+  eos_token_id: <|endoftext|>
+ignore_mismatched_sizes: true
