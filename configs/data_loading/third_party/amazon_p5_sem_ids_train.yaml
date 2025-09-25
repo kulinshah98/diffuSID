@@ -20,7 +20,7 @@ datamodule:
 
 train_dataloader_config:
   dataloader:
-    data_folder: ${paths.data_dir}/training
+    data_folder: ${paths.data_dir}/training_37p5
     assign_files_by_size: false
     assign_all_files_per_worker: true
     should_shuffle_rows: true # this is extremely important for training

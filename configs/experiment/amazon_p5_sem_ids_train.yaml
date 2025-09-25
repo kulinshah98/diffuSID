@@ -12,31 +12,31 @@ defaults:
   - override /callbacks: default
   - _self_
 
-
+exp_id: "amazon-p5-test"
 tags: ["clark-amazon-p5-test"]
 seed: 42
 paths:
-  data_dir: ./data/amazon/beauty
+  data_dir: ./data/amazon_no_cap/beauty
 
 data_loading:
   train_dataloader_config:
     dataloader:
-      batch_size_per_device: 32
+      batch_size_per_device: 2048
       dataset_config:
         semantic_id_map:
           sequence_data:
             _target_: torch.load
             _args_:
               - _target_: src.utils.file_utils.open_local_or_remote
-                file_path: ./data/t5xxl_beauty_3_256.pt
+                file_path: ./data/amazon/beauty/sids/flan-t5-xxl_rkmeans_3_256_seed42.pt
                 mode: rb # R for read B for binary
 
   val_dataloader_config:
     dataloader:
-      batch_size_per_device: 8
+      batch_size_per_device: 2048
   test_dataloader_config:
     dataloader:
-      batch_size_per_device: 8
+      batch_size_per_device: 2048
 
 model:
   # below are hyper-parameters recommended by TIGER
@@ -69,7 +69,7 @@ trainer:
   num_sanity_val_steps: 0
   min_epochs: 0 # setting this to 0 to unblock early stopping,
   # as we are using unbounded datasets.
-  accumulate_grad_batches: 16
+  accumulate_grad_batches: 2
 
 logger:
   wandb:
@@ -86,8 +86,8 @@ callbacks:
   model_checkpoint:
     _target_: src.components.training_callbacks.ModelCheckpointToGCS
     dirpath: ${paths.output_dir}/checkpoints # directory to save the model file
-    filename: "discrete-diffusion-{step:06d}-{val/recall@10:.4f}" # checkpoint filename
-    monitor: "val/recall@10" # name of the logged metric which determines when model is improving
+    filename: "discrete-diffusion-{step:06d}-{val/recall@5:.4f}" # checkpoint filename
+    monitor: "val/recall@5" # name of the logged metric which determines when model is improving
     verbose: True # verbosity mode
     save_last: null # additionally always save an exact copy of the last checkpoint to a file last.ckpt
     save_top_k: 1 # save k best models (determined by above metric)

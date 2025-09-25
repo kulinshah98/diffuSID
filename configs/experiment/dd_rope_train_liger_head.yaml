@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - discrete_diffusion_train_rope
+
+model:
+  use_dense_retrieval_head: true
+  dense_retrieval_update_frequency: 2
+  dense_retrieval_head:
+    _target_: src.models.components.network_blocks.mlp.MLP
+    input_dim: 640
+    hidden_dim_list:
+    - 256
+    output_dim: 640
+    activation:
+      _target_: torch.nn.ReLU
+      _partial_: true
+
+  dense_retrieval_loss_function:
+    _target_: src.components.loss_functions.FullDenseRetrievalLoss
+    contrastive_tau: 0.1
+    normalize: false

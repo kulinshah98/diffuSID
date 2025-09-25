@@ -11,7 +11,9 @@ defaults:
 
 tags: ["discrete_diffusion"]
 seed: 7
-exp_id: "dd_test"
+
+paths:
+  data_dir: gs://goatee-public/movielens/ml1m
 
 model:
   diffusion_config:
@@ -35,36 +37,32 @@ model:
   ignore_diff_semid_padloss: false # Whether to ignore the padding tokens in the diff semantic ids during loss computation
   mask_diff_semid_pad_attn: false # Whether to mask the padding tokens in the diff semantic ids during attention
   use_rotary_position_encoding: true # Enable rotary position encoding
-  num_hierarchies: 5
 
 embedding_dim: 128
 attend_to_padding: false # Whether to attend to padding tokens in the transformer model
 use_token_type_embedding: false
-
-logger: 
-  wandb:
-    id: ${exp_id} # pass correct id to resume experiment!
 
 # Dynamic percentage list configuration
 percentage_schedule:
   max_value: 0.7      # Maximum percentage value that moves across positions
   min_value: 0.1      # Minimum percentage value for all positions
   total_steps: ${trainer.max_steps}  # Total training steps
-  update_frequency: 1000  # Update percentage list every N steps
+  update_frequency: 500  # Update percentage list every N steps
 
-sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_4_256_seed43.pt
-# data_freqs_path: ./data/beauty_train_data.pkl
+sid_data_path: gs://goatee-public/movielens/ml1m/sids/kcore5/flan-t5-xxl_rkmeans_4_256_seed42.pt
+sequence_length: 420
 data_freqs_path: null
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_3_256_seed43.pt
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_4_256_seed43.pt
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_5_256_seed43.pt
-
 
 data_loading:
   train_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
-      sequence_length: 120  # Maximum sequence length     
+      batch_size_per_device: 256
+      sequence_length: ${sequence_length}  # Maximum sequence length   
+      collate_fn:
+        _target_: src.data.loading.components.collate_functions.collate_fn_ml_train
+        _partial_: true
+        padding_token: ${data_loading.train_dataloader_config.dataloader.padding_token}
+        num_hierarchies: ${model.num_hierarchies}  
       dataset_config:
         semantic_id_map:
           sequence_data:
@@ -76,10 +74,12 @@ data_loading:
 
   val_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
+      num_workers: 1
+      batch_size_per_device: 256
   test_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
+      num_workers: 1
+      batch_size_per_device: 256
 
 # Callbacks configuration for checkpointing
 callbacks:
@@ -114,10 +114,6 @@ loss:
     _target_: src.components.loss_functions.FullBatchCrossEntropyLoss
     normalize: false
     contrastive_tau: 1.0
-
-# Dataset settings
-paths:
-  data_dir: ./data/amazon_no_cap/beauty
 
 
 # Trainer settings

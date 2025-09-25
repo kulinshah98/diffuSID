@@ -11,7 +11,6 @@ defaults:
 
 tags: ["discrete_diffusion"]
 seed: 7
-exp_id: "dd_test"
 
 model:
   diffusion_config:
@@ -35,15 +34,10 @@ model:
   ignore_diff_semid_padloss: false # Whether to ignore the padding tokens in the diff semantic ids during loss computation
   mask_diff_semid_pad_attn: false # Whether to mask the padding tokens in the diff semantic ids during attention
   use_rotary_position_encoding: true # Enable rotary position encoding
-  num_hierarchies: 5
 
 embedding_dim: 128
 attend_to_padding: false # Whether to attend to padding tokens in the transformer model
 use_token_type_embedding: false
-
-logger: 
-  wandb:
-    id: ${exp_id} # pass correct id to resume experiment!
 
 # Dynamic percentage list configuration
 percentage_schedule:
@@ -52,18 +46,13 @@ percentage_schedule:
   total_steps: ${trainer.max_steps}  # Total training steps
   update_frequency: 1000  # Update percentage list every N steps
 
-sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_4_256_seed43.pt
-# data_freqs_path: ./data/beauty_train_data.pkl
-data_freqs_path: null
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_3_256_seed43.pt
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_4_256_seed43.pt
-# sid_data_path: ./data/amazon/beauty/sids/flan-t5-xl_rkmeans_5_256_seed43.pt
-
+sid_data_path: gs://goatee-public/amazon/P5/amazon/toys/sids/flan-t5-xxl_rkmeans_3_256_seed42.pt
+data_freqs_path: gs://goatee-public/kshah4/toys_train_data.pkl
 
 data_loading:
   train_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
+      batch_size_per_device: 128
       sequence_length: 120  # Maximum sequence length     
       dataset_config:
         semantic_id_map:
@@ -76,10 +65,10 @@ data_loading:
 
   val_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
+      batch_size_per_device: 256
   test_dataloader_config:
     dataloader:
-      batch_size_per_device: 2048
+      batch_size_per_device: 256
 
 # Callbacks configuration for checkpointing
 callbacks:
@@ -117,12 +106,12 @@ loss:
 
 # Dataset settings
 paths:
-  data_dir: ./data/amazon_no_cap/beauty
+  data_dir: gs://goatee-public/amazon/P5/amazon/toys
 
 
 # Trainer settings
 trainer:
-  max_steps: 700000
+  max_steps: 400000
   precision: 32-true  # Keep 32-bit for stability
   log_every_n_steps: 2000
   val_check_interval: 10000
@@ -136,6 +125,9 @@ optim:
   optimizer:
     lr: !!float 1e-3
     weight_decay: !!float 1e-3
+
+  scheduler:
+    warmup_steps: !!int 1000
 
 # Evaluator settings
 eval:

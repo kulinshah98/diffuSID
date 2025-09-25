@@ -1,8 +1,13 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
 import torch
 import torchmetrics
 from torchmetrics.metric import Metric
 from torchmetrics.utilities.distributed import gather_all_tensors
+
+## Custom Metrics
+
+
 class CustomMeanReductionMetric(torchmetrics.Metric):
     """
     Custom metric class that uses mean reduction and supports distributed training.
@@ -47,6 +52,8 @@ class CustomMeanReductionMetric(torchmetrics.Metric):
 
     def update(self) -> None:
         raise NotImplementedError
+
+
 class CustomRetrievalMetric(CustomMeanReductionMetric):
     """
     Custom retrieval metric class to calculate ranking metrics.
@@ -55,7 +62,7 @@ class CustomRetrievalMetric(CustomMeanReductionMetric):
     def __init__(
         self,
         top_k: int,
-        percentage: float = 1.0,
+        percentage: float = 100.0,
         seq_len_percentage: int = None,
         **kwargs: Any,
     ) -> None:
@@ -91,6 +98,8 @@ class CustomRetrievalMetric(CustomMeanReductionMetric):
 
     def _metric(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
+
+
 class NDCG(CustomRetrievalMetric):
     """
     Metric to calculate Normalized Discounted Cumulative Gain@K (NDCG@K).
@@ -122,6 +131,8 @@ class NDCG(CustomRetrievalMetric):
         # Handle cases where IDCG is zero
         ndcg = dcg / torch.where(ideal_dcg == 0, torch.ones_like(ideal_dcg), ideal_dcg)
         return ndcg
+
+
 class Recall(CustomRetrievalMetric):
     """
     Metric to calculate Recall@K.
@@ -140,6 +151,11 @@ class Recall(CustomRetrievalMetric):
             min=1
         )  # Use clamp to avoid zero
         return recall
+
+
+## Evaluators
+
+
 class Evaluator:
     def __init__(self, metrics: Dict[str, Metric], *args, **kwargs):
         self.metrics = metrics
@@ -154,6 +170,8 @@ class Evaluator:
     def to(self, device: torch.device):
         for metric in self.metrics.values():
             metric.to(device=device)
+
+
 class ClassificationEvaluator(Evaluator):
     """
     Wrapper for classification evaluation metrics.
@@ -167,6 +185,8 @@ class ClassificationEvaluator(Evaluator):
     def __call__(self, logits: torch.Tensor, labels: torch.Tensor):
         for _, metric_object in self.metrics.items():
             metric_object.update(logits, labels)
+
+
 class RetrievalEvaluator(Evaluator):
     """
     Wrapper for retrieval evaluation metrics.
@@ -177,16 +197,20 @@ class RetrievalEvaluator(Evaluator):
         self,
         metrics: Dict[str, CustomRetrievalMetric],
         top_k_list: List[int],
+        percentage_list: Optional[List[int]] = None,
+        seq_len_list: Optional[List[int]] = None,
         should_sample_negatives_from_vocab: bool = True,
         num_negatives: int = 500,
         placeholder_token_buffer: int = 100,
     ):
         self.metrics = {
-            f"{metric_name}@{top_k}": metric_object(
+            f"{metric_name}@k{top_k}@targetp{percentage}@seqlen{seq_len_percentage}": metric_object(
                 top_k=top_k, sync_on_compute=False, compute_with_cache=False
             )
             for metric_name, metric_object in metrics.items()
             for top_k in top_k_list
+            for percentage in percentage_list
+            for seq_len_percentage in seq_len_list
         }
         self.should_sample_negatives_from_vocab = should_sample_negatives_from_vocab
         self.num_negatives = num_negatives
@@ -197,6 +221,8 @@ class RetrievalEvaluator(Evaluator):
         query_embeddings: torch.Tensor,
         key_embeddings: torch.Tensor,
         labels: torch.Tensor,
+        generated_id_mask: Optional[torch.Tensor] = None,
+        codebook: Optional[torch.Tensor] = None,
     ):
         num_of_samples = query_embeddings.shape[0]
         num_of_candidates = key_embeddings.shape[0]
@@ -235,8 +261,17 @@ class RetrievalEvaluator(Evaluator):
                 .reshape(-1)
             )
         else:
-            preds = torch.mm(query_embeddings, key_embeddings.t()).reshape(-1)
+            # pred1 = torch.mm(query_embeddings[:, :128], key_embeddings[:, :128].t())
+            # pred2 = torch.mm(query_embeddings[:, 128:256], key_embeddings[:, 128:256].t())
+            # pred3 = torch.mm(query_embeddings[:, 256:384], key_embeddings[:, 256:384].t())
+            # pred4 = torch.mm(query_embeddings[:, 384:512], key_embeddings[:, 384:512].t())
+            # import pdb; pdb.set_trace()
+            if generated_id_mask is not None:
+                preds = (torch.mm(query_embeddings, key_embeddings.t()) * generated_id_mask).reshape(-1)
+            else:
+                preds = torch.mm(query_embeddings, key_embeddings.t()).reshape(-1)
 
+        # import pdb; pdb.set_trace()
         target = torch.zeros(num_of_samples, num_of_candidates).bool()
         target[torch.arange(num_of_samples), labels] = True
         target = target.reshape(-1)
@@ -271,6 +306,8 @@ class RetrievalEvaluator(Evaluator):
         )
 
         return negative_candidates
+
+
 class SIDRetrievalEvaluator(Evaluator):
     """
     Wrapper for retrieval evaluation metrics for semantic IDs.
@@ -324,6 +361,8 @@ class SIDRetrievalEvaluator(Evaluator):
                 target.to(preds.device),
                 indexes=expanded_indexes.to(preds.device),
             )
+
+
 class MultiSIDRetrievalEvaluator(Evaluator):
     """
     Wrapper for retrieval evaluation metrics for semantic IDs.
@@ -389,3 +428,4 @@ class MultiSIDRetrievalEvaluator(Evaluator):
                 first_sid_label_locations=first_sid_label_locations.to(preds.device) if first_sid_label_locations is not None else None,
                 max_seq_len=max_seq_len if max_seq_len is not None else None,
             )
+

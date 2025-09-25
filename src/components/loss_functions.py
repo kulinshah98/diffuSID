@@ -1,6 +1,9 @@
 from typing import Optional
+
 import torch
 import torch.nn.functional as F
+
+
 class InBatchContrastiveLoss(torch.nn.Module):
     """Contrastive loss with in-batch negative samples for item prediction task.
 
@@ -92,6 +95,43 @@ class InBatchContrastiveLoss(torch.nn.Module):
         loss = -torch.log(numerator / denominator)
 
         return loss.mean()
+
+class FullDenseRetrievalLoss(torch.nn.Module):
+    """
+    Dense retrieval loss.
+    """
+    
+    
+    def __init__(
+        self,
+        contrastive_tau: float = 0.1,
+        normalize: bool = True,
+        **kwargs,
+    ):
+        super().__init__()
+        self.tau = contrastive_tau
+        self.normalize = normalize
+        self.cross_entropy_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        
+    def forward(
+        self,
+        query_embeddings: torch.Tensor,
+        key_embeddings: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute the contrastive loss with negative samples from the full vocabulary.
+        """
+        # query embeddings shape: (batch_size, embedding_dim)
+        # key embeddings shape: (total number of items, embedding_dim)
+        logits = torch.mm(query_embeddings, key_embeddings.t()) / self.tau
+
+        loss = self.cross_entropy_loss(logits, labels.long())
+
+        return loss.mean()
+        
+
+
 class FullBatchCrossEntropyLoss(torch.nn.Module):
     """
     Contrastive loss with negative samples being all candidates in the embedding table.
@@ -161,3 +201,4 @@ class FullBatchCrossEntropyLoss(torch.nn.Module):
         loss = self.cross_entropy_loss(logits, labels.long())
 
         return (loss * weights).sum()
+

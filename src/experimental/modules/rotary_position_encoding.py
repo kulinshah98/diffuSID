@@ -380,19 +380,24 @@ class RotaryTransformerEncoder(nn.Module):
         self.num_layers = num_layers
         self.norm = norm
         
-    def forward(self, src: torch.Tensor, mask: torch.Tensor = None, src_key_padding_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, src: torch.Tensor, mask: torch.Tensor = None, src_key_padding_mask: torch.Tensor = None, give_half_way_embedding: bool = False) -> torch.Tensor:
         """
         Forward pass with rotary position encoding.
         """
         output = src
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             output = layer(
                 output,
                 src_mask=mask,
                 src_key_padding_mask=src_key_padding_mask
             )
+            if give_half_way_embedding and i == self.num_layers // 2 - 1:
+                half_way_embedding = output
         
         if self.norm is not None:
             output = self.norm(output)
 
-        return output
+        if give_half_way_embedding:
+            return output, half_way_embedding
+        else:   
+            return output

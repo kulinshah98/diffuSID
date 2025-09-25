@@ -1,4 +1,5 @@
 from typing import Optional, Tuple, Any, Dict
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,6 +7,7 @@ import pdb
 import math
 import pickle
 import gcsfs
+
 from src.models.modules.base_module import BaseModule
 from src.models.modules.semantic_id.tiger_generation_model import SemanticIDEncoderModule
 from src.utils.utils import (
@@ -24,7 +26,8 @@ from src.experimental.modules.rotary_position_encoding import (
     RotaryTransformerEncoderLayer
 )
 from itertools import product
-import os
+
+
 
 
 class DiscreteDiffusionModule(BaseModule):
@@ -42,6 +45,11 @@ class DiscreteDiffusionModule(BaseModule):
         vocab_size: int,
         embedding_dim: int,
         padding_token_id: int,
+        normalization: Optional[bool] = True,
+        use_dense_retrieval_head: Optional[bool] = False,
+        dense_retrieval_head: Optional[torch.nn.Module] = None,
+        dense_retrieval_loss_function: Optional[torch.nn.Module] = None,
+        dense_retrieval_update_frequency: Optional[int] = 5,
         positional_embedding: Optional[torch.nn.Module] = None,
         use_diff_semantic_id: Optional[bool] = False,
         ignore_diff_semid_padloss: Optional[bool] = False,
@@ -57,6 +65,7 @@ class DiscreteDiffusionModule(BaseModule):
         use_rotary_position_encoding: Optional[bool] = False,
         max_position_embeddings: Optional[int] = 2048,
         eval_hierarchy_cutoff: Optional[int] = 1,
+        update_frequency: Optional[int] = 1000,
         **kwargs,
     ) -> None:
 
@@ -71,6 +80,10 @@ class DiscreteDiffusionModule(BaseModule):
         
         self.positional_embedding = positional_embedding
         self.use_token_type_embedding = use_token_type_embedding
+        self.use_dense_retrieval_head = use_dense_retrieval_head
+        self.dense_retrieval_head = dense_retrieval_head
+        self.dense_retrieval_loss_function = dense_retrieval_loss_function
+        self.dense_retrieval_update_frequency = dense_retrieval_update_frequency
         if self.use_token_type_embedding:
             self.token_type_embedding = token_type_embedding
 
@@ -84,16 +97,12 @@ class DiscreteDiffusionModule(BaseModule):
         self.projection = projection
         self.attend_to_padding = attend_to_padding
         self.eval_hierarchy_cutoff = eval_hierarchy_cutoff
-        
+        self.normalization = normalization
         self.use_diff_semantic_id = use_diff_semantic_id
         self.ignore_diff_semid_padloss = ignore_diff_semid_padloss
         self.mask_diff_semid_pad_attn = mask_diff_semid_pad_attn
 
-        # Store percentage scheduling parameters for logging
-        self.max_value = kwargs.get('max_value', 0.9)
-        self.min_value = kwargs.get('min_value', 0.0)
-        self.total_steps = kwargs.get('total_steps', 100000)
-        self.update_frequency = kwargs.get('update_frequency', 100)
+        self.update_frequency = update_frequency
 
         self.num_embeddings_per_hierarchy = vocab_size + 1  # +1 for masking
         if self.use_diff_semantic_id:
@@ -104,7 +113,7 @@ class DiscreteDiffusionModule(BaseModule):
         self.freqs = None
         self.sorted_freqs = None
         if data_freqs_path is not None:
-            with open(data_freqs_path, "rb") as f:
+            with fs.open(data_freqs_path, "rb") as f:
                 data = pickle.load(f)
 
             self.items = torch.Tensor(data["items"])
@@ -131,33 +140,6 @@ class DiscreteDiffusionModule(BaseModule):
             num_embeddings=self.num_embeddings_per_hierarchy * self.num_hierarchies + 1,  # +1 for padding token
             embedding_dim=embedding_dim
         )
-
-    def _update_dynamic_percentage_list(self, batch_idx: int):
-        """Update the dynamic percentage list in the dataloader if it exists."""
-        # Update global training step for collate function
-        from src.data.loading.components.dynamic_collate_functions import set_training_step, get_training_step
-        if batch_idx % self.update_frequency == 0:
-            print(f"Updating dynamic percentage list at step {self.trainer.global_step}")
-            set_training_step(self.trainer.global_step)
-            self._log_percentage_list()
-
-    def _log_percentage_list(self):
-        """Log the current percentage list values as metrics."""
-        from src.data.loading.components.dynamic_collate_functions import get_current_percentage_list
-        
-        # Get percentage list using same parameters as collate function
-        percentage_list = get_current_percentage_list(
-            num_hierarchies=self.num_hierarchies,
-            max_value=self.max_value,
-            min_value=self.min_value, 
-            total_steps=self.total_steps
-        )
-        print(f"Percentage list in _log_percentage_list: {percentage_list}")
-        # Log each hierarchy position's percentage value
-        for i, percentage in enumerate(percentage_list):
-            self.log(
-                f"percentage_list/hierarchy_{i}", percentage,
-                on_step=True, on_epoch=False, prog_bar=False)
 
     def encoder_output_to_loss(
         self,
@@ -219,7 +201,10 @@ class DiscreteDiffusionModule(BaseModule):
         #         print(f"Parameter '{name}' did not receive a gradient.")
 
         # pdb.set_trace()
-        return output / math.sqrt(self.embedding_dim)
+        if self.normalization:
+            return output / math.sqrt(self.embedding_dim)
+        else:   
+            return output
 
 
     def model_step(
@@ -241,7 +226,7 @@ class DiscreteDiffusionModule(BaseModule):
         )
         masked_locations = (transformed_masked_input == self.masking_token_id)
 
-        encoder_output = self.forward(transformed_masked_input) 
+        encoder_output = self.forward(transformed_masked_input)
 
         if self.diffusion_config['loss_reweighting'] == 'equal':
             weights = torch.ones_like(transformed_labels, dtype=torch.float32)
@@ -262,6 +247,41 @@ class DiscreteDiffusionModule(BaseModule):
             )
         
         avg_loss = loss / torch.sum(weights)
+        
+        # Always use dense_retrieval_head to avoid DDP unused parameter issues
+        if self.use_dense_retrieval_head and self.dense_retrieval_head is not None:
+            bs, seq_len = masked_input.shape
+
+            self.transformed_codebooks, _ = self.transform_input_and_labels(
+                self.codebooks.to(self.device), None, None
+            )
+            all_embeddings = self.item_sid_embedding_table_encoder.weight[self.transformed_codebooks]
+            all_embeddings_reshaped = all_embeddings.view(self.codebooks.shape[0], -1)
+            projected_all_embeddings = self.dense_retrieval_head(all_embeddings_reshaped)
+
+            # Only compute and add dense retrieval loss at specified frequency
+            if self.trainer.global_step % self.dense_retrieval_update_frequency == 0:
+                generated_encodings = encoder_output[ label_locations[:, 0], label_locations[:, 1] ]
+                generated_encodings_reshaped = generated_encodings.view(bs, -1)
+                
+                curent_labels = transformed_labels.view(bs, 1, -1)
+                matches = (curent_labels == self.transformed_codebooks.unsqueeze(0)).all(dim=2)
+                label_items = torch.where(matches)[1]
+
+                dense_retrieval_loss = self.dense_retrieval_loss_function(
+                    query_embeddings=generated_encodings_reshaped, 
+                    key_embeddings=projected_all_embeddings,
+                    labels=label_items,
+                )
+                avg_loss += dense_retrieval_loss
+            else:
+                # Use a dummy loss to ensure the dense_retrieval_head parameters are used
+                # This prevents DDP from complaining about unused parameters
+                dummy_loss = torch.tensor(0.0, device=avg_loss.device, requires_grad=True)
+                # Create a small computation that uses the projected embeddings
+                dummy_loss = dummy_loss + (projected_all_embeddings.mean() * 0.0)
+                avg_loss = avg_loss + dummy_loss
+        
         return encoder_output, avg_loss
 
     def encoder_output_to_probabilities(self, encoder_output: torch.Tensor) -> torch.Tensor:
@@ -358,13 +378,9 @@ class DiscreteDiffusionModule(BaseModule):
         # from src.data.loading.components.dynamic_collate_functions import set_training_step
         # set_training_step(self.trainer.global_step)
         
-        # if self.use_diff_semantic_id:
-        #     self._update_dynamic_percentage_list(batch_idx)
-        
         batch = batch[0]
         model_input: SequentialModelInputData = batch[0]
         label_data: SequentialModuleLabelData = batch[1]
-        # import ipdb; ipdb.set_trace()
         
         # Apply masking to input and labels
         model_input, label_data, fractions = self.mask_input_and_labels(model_input, label_data)
@@ -474,6 +490,68 @@ class DiscreteDiffusionModule(BaseModule):
         projected_ids_flat = codebooks[match_idx]
         return projected_ids_flat.reshape(bs, num_candidates, num_hierarchies)
 
+    def generative_retrieval_eval(
+        self, generated_ids, masked_input, labels, label_locations, 
+        modified_masked_input, modified_label_locations, 
+        transformed_labels, final_probs, model_input, label_data
+        ):
+        
+        
+        if self.freqs is not None:
+            bs = generated_ids.shape[0]
+            labels_reshaped = labels.view(bs, self.num_hierarchies)
+            matches = (labels_reshaped.unsqueeze(1) == self.codebooks.to(self.device).unsqueeze(0))
+            row_matches = matches.all(dim=2)
+            label_indices = row_matches.float().argmax(dim=1)
+            label_freqs = self.freqs.to(self.device).clone().detach()[label_indices.to(self.device)]
+
+        first_sid_label_locations = label_locations[0::self.num_hierarchies, 1].clone().detach()
+        # import ipdb; ipdb.set_trace()
+        self.evaluator(
+            marginal_probs=final_probs,
+            generated_ids=generated_ids,
+            labels=transformed_labels,
+            label_freqs=label_freqs if self.freqs is not None else None,
+            sorted_freqs=self.sorted_freqs,
+            first_sid_label_locations=first_sid_label_locations,
+            max_seq_len=masked_input.shape[1]
+        )
+
+    def dense_next_token_prediction(
+        self,
+        transformed_masked_input: torch.Tensor,
+        transformed_labels: torch.Tensor,
+        label_locations: torch.Tensor,
+    ) -> torch.Tensor:
+        bs, seq_len = transformed_masked_input.shape
+        num_items = self.codebooks.shape[0]
+        self.transformed_codebooks, _ = self.transform_input_and_labels(
+            self.codebooks.to(self.device), None, None
+        )
+        key_embeddings = self.item_sid_embedding_table_encoder.weight[self.transformed_codebooks]
+        key_embeddings_norm = key_embeddings.norm(dim=-1).mean(dim=0)
+        position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(bs, -1)
+        generated_embeddings = torch.zeros(bs, self.num_hierarchies, self.embedding_dim, device=self.device)
+
+        for i in range(self.num_hierarchies):
+            # import ipdb; ipdb.set_trace()
+            cur_pred_locations = label_locations[i::self.num_hierarchies, :]
+
+            padding_mask = None
+            if not self.attend_to_padding:
+                new_padding_value = self.num_embeddings_per_hierarchy * self.num_hierarchies
+                padding_mask = (transformed_masked_input == new_padding_value)
+            
+            if i == 0:
+                inputs_emb = self.item_sid_embedding_table_encoder.weight[transformed_masked_input]
+            output = self.model(inputs_emb, src_key_padding_mask=padding_mask)
+
+            extracted = output[cur_pred_locations[:, 0], cur_pred_locations[:, 1]]
+            generated_embeddings[:, i, :] = extracted
+            inputs_emb[cur_pred_locations[:, 0], cur_pred_locations[:, 1]] = torch.nn.functional.normalize(extracted, dim=-1) * key_embeddings_norm[i]
+        
+        return generated_embeddings
+
 
     def eval_step(
         self, 
@@ -497,23 +575,86 @@ class DiscreteDiffusionModule(BaseModule):
         # Create modified data objects
         model_input.transformed_sequences['sequence_data'] = modified_masked_input
         label_data.label_location['sequence_data'] = modified_label_locations
+        # Transform both input and labels with hierarchical offsets
+        transformed_masked_input, transformed_labels = self.transform_input_and_labels(
+            modified_masked_input, labels, modified_label_locations
+        )
 
-        if self.diffusion_config['inference_type'] == "beam-search-generation":
+        if self.diffusion_config['inference_type'] == "beam-search-generation" or self.diffusion_config['inference_type'] == "gen-then-dense":
             generated_ids, final_probs = self.beam_search_generation(
                 model_input, label_data
             )
+            if self.projection:
+                generated_ids = self.project_generated_ids(generated_ids)
+            if self.deduplication:
+                generated_ids, transformed_labels, final_probs = self.convert_deduplicate(
+                    generated_ids, transformed_labels, final_probs, model_input, label_data
+                )
             # import ipdb; ipdb.set_trace()
-        elif self.diffusion_config['inference_type'] == "constrained-beam-search-generation":
+        
+        if self.diffusion_config['inference_type'] == "constrained-beam-search-generation":
             # Initialize constrained beam search
             self.constrained_beam_search = ConstrainedBeamSearch(self)
             generated_ids, final_probs = self.constrained_beam_search.beam_search_generation(
                 model_input, label_data
             )
+        
+        if self.diffusion_config['inference_type'] == "dense-retrieval" or self.diffusion_config['inference_type'] == "gen-then-dense":
+            bs = transformed_masked_input.shape[0]
+            num_items = self.codebooks.shape[0]
+            generated_embeddings = self.forward(transformed_masked_input)
+            masked_locations = (transformed_masked_input == self.masking_token_id)
+            # import ipdb; ipdb.set_trace()
+            combined_embeddings = torch.nn.functional.normalize(generated_embeddings[masked_locations], dim=-1)
+            combined_embeddings = combined_embeddings.reshape(bs, -1)
 
-        # Transform both input and labels with hierarchical offsets
-        transformed_masked_input, transformed_labels = self.transform_input_and_labels(
-            modified_masked_input, labels, modified_label_locations
-        )
+            self.transformed_codebooks, _ = self.transform_input_and_labels(
+                self.codebooks.to(self.device), None, None
+            )
+            key_embeddings = self.item_sid_embedding_table_encoder.weight[self.transformed_codebooks]
+            key_embeddings = torch.nn.functional.normalize(key_embeddings, dim=-1)
+            key_embeddings = key_embeddings.reshape(num_items, -1)
+
+            # convert label_data to match items from transformed_codebooks
+            labels_reshaped = labels.view(bs, self.num_hierarchies)
+            matches = (labels_reshaped.unsqueeze(1) == self.codebooks.to(self.device).unsqueeze(0))
+            item_ids = torch.where(matches.all(dim=2))[1]
+
+        if self.diffusion_config['inference_type'] == "dense-retrieval-with-head":
+            bs = transformed_masked_input.shape[0]
+            num_items = self.codebooks.shape[0]
+            generated_embeddings = self.forward(transformed_masked_input)
+            masked_locations = (transformed_masked_input == self.masking_token_id)
+            combined_embeddings = generated_embeddings[masked_locations].reshape(bs, -1)
+
+            self.transformed_codebooks, _ = self.transform_input_and_labels(
+                self.codebooks.to(self.device), None, None
+            )
+            labels_reshaped = labels.view(bs, self.num_hierarchies)
+            matches = (labels_reshaped.unsqueeze(1) == self.codebooks.to(self.device).unsqueeze(0))
+            item_ids = torch.where(matches.all(dim=2))[1]
+
+            key_embeddings = self.item_sid_embedding_table_encoder.weight[self.transformed_codebooks].reshape(num_items, -1)
+            dense_retrieval_embeddings = self.dense_retrieval_head(key_embeddings)
+
+        if self.diffusion_config['inference_type'] == "dense-next-token-prediction":
+            bs = transformed_masked_input.shape[0]
+            num_items = self.codebooks.shape[0]
+            self.transformed_codebooks, _ = self.transform_input_and_labels(
+                self.codebooks.to(self.device), None, None
+            )
+            key_embeddings = self.item_sid_embedding_table_encoder.weight[self.transformed_codebooks].reshape(num_items, -1)
+            combined_embeddings = self.dense_next_token_prediction(
+                transformed_masked_input, transformed_labels, label_locations
+            )
+
+            combined_embeddings = combined_embeddings.reshape(bs, -1)
+            # convert label_data to match items from transformed_codebooks
+            labels_reshaped = labels.view(bs, self.num_hierarchies)
+            matches = (labels_reshaped.unsqueeze(1) == self.codebooks.to(self.device).unsqueeze(0))
+            item_ids = torch.where(matches.all(dim=2))[1]
+            # import ipdb; ipdb.set_trace()
+
         ## Uncomment this to evaluate the generated ids for small semantic ids
         # transformed_labels = transformed_labels.reshape(-1, self.num_hierarchies)
         # transformed_labels[:, self.eval_hierarchy_cutoff:] = generated_ids[:, 0, self.eval_hierarchy_cutoff:]
@@ -529,33 +670,31 @@ class DiscreteDiffusionModule(BaseModule):
         # )
         # return
 
-        if self.projection:
-            generated_ids = self.project_generated_ids(generated_ids)
-        
-        if self.deduplication:
-            generated_ids, transformed_labels, final_probs = self.convert_deduplicate(
-                generated_ids, transformed_labels, final_probs, model_input, label_data
+        if self.diffusion_config['inference_type'] == "beam-search-generation" or self.diffusion_config['inference_type'] == "constrained-beam-search-generation":
+            self.generative_retrieval_eval(
+                generated_ids, masked_input, labels, label_locations, 
+                modified_masked_input, modified_label_locations, 
+                transformed_labels, final_probs, model_input, label_data
+                )
+        elif self.diffusion_config['inference_type'] == "dense-retrieval" or self.diffusion_config['inference_type'] == "dense-retrieval-with-head" or self.diffusion_config['inference_type'] == "dense-next-token-prediction":
+            # pdb.set_trace()
+            self.evaluator(
+                query_embeddings=combined_embeddings,
+                key_embeddings=key_embeddings,
+                labels=item_ids,
+                codebook=self.codebooks,
             )
-        
-        if self.freqs is not None:
-            bs = generated_ids.shape[0]
-            labels_reshaped = labels.view(bs, self.num_hierarchies)
-            matches = (labels_reshaped.unsqueeze(1) == self.codebooks.to(self.device).unsqueeze(0))
-            row_matches = matches.all(dim=2)
-            label_indices = row_matches.float().argmax(dim=1)
-            label_freqs = torch.tensor(self.freqs, device=labels.device)[label_indices]
-
-        first_sid_label_locations = label_locations[0::self.num_hierarchies, 1].clone().detach()
-        # import ipdb; ipdb.set_trace()
-        self.evaluator(
-            marginal_probs=final_probs,
-            generated_ids=generated_ids,
-            labels=transformed_labels,
-            label_freqs=label_freqs if self.freqs is not None else None,
-            sorted_freqs=self.sorted_freqs,
-            first_sid_label_locations=first_sid_label_locations,
-            max_seq_len=masked_input.shape[1]
-        )
+        elif self.diffusion_config['inference_type'] == "gen-then-dense":
+            matches = (generated_ids.unsqueeze(2) == self.transformed_codebooks.to(self.device).unsqueeze(0).unsqueeze(0))
+            matched_items = matches.all(dim=-1)
+            combined_matched_items = matched_items.sum(dim=1).bool()
+            self.evaluator(
+                query_embeddings=combined_embeddings,
+                key_embeddings=key_embeddings,
+                labels=item_ids,
+                generated_id_mask=combined_matched_items,
+                codebook=self.codebooks,
+            )
 
 
     def transform_input_and_labels(
@@ -577,7 +716,8 @@ class DiscreteDiffusionModule(BaseModule):
             Tuple of (transformed_masked_input, transformed_labels)
         """
         # Process masked input to replace padding tokens
-        assert masked_input.max() < self.num_embeddings_per_hierarchy, "masked_input contains invalid token IDs"
+        if labels is not None:
+            assert masked_input.max() < self.num_embeddings_per_hierarchy, "masked_input contains invalid token IDs"
         masked_input = self.process_masked_input(masked_input)
 
         bs, seq_len = masked_input.shape
@@ -614,11 +754,11 @@ class DiscreteDiffusionModule(BaseModule):
         num_combinations = num_candidates ** tokens_to_unmask
         expanded_candidates = torch.zeros(
             (bs, cur_beam_size * num_combinations, seq_len), 
-            dtype=torch.int16, device=self.device
+            dtype=torch.long, device=self.device
         )
         expanded_values = torch.zeros(
             (bs, cur_beam_size * num_combinations), 
-            dtype=torch.float16, device=self.device
+            dtype=torch.float32, device=self.device
         )
         if tokens_to_unmask > 1:
             assert self.diffusion_config['unmasking_type'] == 'left-to-right', "unmasking_type must be left-to-right when tokens_to_unmask > 1"
@@ -658,10 +798,9 @@ class DiscreteDiffusionModule(BaseModule):
                 probs = torch.softmax(logits, dim=1)
                 random_offsets = torch.multinomial(probs, tokens_to_unmask)  # (bs, tokens_to_unmask)
             elif self.diffusion_config['unmasking_type'] == 'left-to-right':
-                # Generate left-to-right offsets
-                # random_offsets = torch.zeros(bs, device=self.device, dtype=torch.long)  
+                # Generate left-to-right offsets - select the first tokens_to_unmask masked positions
+                # This should be relative to the flattened masked positions array
                 random_offsets = torch.arange(tokens_to_unmask, device=self.device, dtype=torch.long).unsqueeze(0).expand(bs, tokens_to_unmask).clone()
-                # random_offsets.flatten()
             
 
             # pdb.set_trace()
@@ -757,7 +896,7 @@ class DiscreteDiffusionModule(BaseModule):
         self,
         model_input: torch.Tensor,
         label_data: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs beam search to generate candidate sequences from masked positions.
         
@@ -774,7 +913,7 @@ class DiscreteDiffusionModule(BaseModule):
         num_candidates = self.diffusion_config['num_candidates']
         steps = self.diffusion_config['num_steps']
         
-        timesteps = torch.linspace(1, 1e-5, steps + 1, device='cuda')
+        timesteps = torch.linspace(1, 1e-5, steps + 1, device=self.device)
         bs, seq_len = model_input.transformed_sequences['sequence_data'].shape
         generated_ids = torch.zeros(
             (bs, num_candidates, self.num_hierarchies), 
@@ -870,12 +1009,15 @@ class DiscreteDiffusionModule(BaseModule):
         unpadded_positions = (input_seq != self.padding_token_id)
         
         # Generate random fractions for each row (uniform between 0 and 1)
-        if self.diffusion_config['noise_schedule'] == 'uniform':
+        cur_noise_schedule = self.diffusion_config['noise_schedule']
+        if self.trainer.global_step % self.dense_retrieval_update_frequency == 0 and self.use_dense_retrieval_head:
+            cur_noise_schedule = 'last-token-ar'
+        if cur_noise_schedule == 'uniform':
             fractions = torch.rand(batch_size, device=device) * self.diffusion_config['max_mask_fraction']
-        elif self.diffusion_config['noise_schedule'] == 'edm':
+        elif cur_noise_schedule == 'edm':
             snr = (1.2 * torch.randn(batch_size, device=device) - 1.2).exp()
             fractions = snr / (snr + 1)
-        elif self.diffusion_config['noise_schedule'] == 'last-token-ar':
+        elif cur_noise_schedule == 'last-token-ar':
             idx = torch.arange(input_seq.size(1), device=input_seq.device).unsqueeze(0).expand_as(input_seq)
             idx_padded = idx * unpadded_positions + (~unpadded_positions) * -1
             sorted_idx = torch.argsort(idx_padded, dim=1, descending=True)
@@ -884,10 +1026,11 @@ class DiscreteDiffusionModule(BaseModule):
             unpadded_mask_positions = torch.zeros_like(input_seq, dtype=torch.bool)
             row_idx = torch.arange(input_seq.size(0), device=input_seq.device).unsqueeze(1).expand_as(last_k_idx)
             unpadded_mask_positions[row_idx, last_k_idx] = True
-            fractions = self.num_hierarchies / unpadded_positions.sum(dim=-1)
+            fractions = torch.ones(input_seq.size(0), dtype=torch.float32, device=input_seq.device)
+            # fractions = self.num_hierarchies / unpadded_positions.sum(dim=-1)
         
 
-        if self.diffusion_config['noise_schedule'] == 'edm' or self.diffusion_config['noise_schedule'] == 'uniform':
+        if cur_noise_schedule == 'edm' or cur_noise_schedule == 'uniform':
             random_vals = torch.rand(batch_size, seq_len, device=device)
         
             # Create mask tensor
@@ -907,6 +1050,7 @@ class DiscreteDiffusionModule(BaseModule):
         label_data.labels['sequence_data'] = labels
         label_data.label_location['sequence_data'] = label_locations
         
+        # import pdb; pdb.set_trace()
         return model_input, label_data, fractions
 
     def on_load_checkpoint(self, checkpoint):
@@ -916,4 +1060,92 @@ class DiscreteDiffusionModule(BaseModule):
         checkpoint['lr_schedulers'][0]['min_ratio'] = self.scheduler.keywords['min_ratio']
         checkpoint['lr_schedulers'][0]['base_lrs'][0] = self.optimizer.keywords['lr']
         checkpoint['lr_schedulers'][0]['scheduler_steps'] = self.scheduler.keywords['scheduler_steps']
+        
+        # Handle missing dense_retrieval_head parameters by initializing them randomly
+        if self.use_dense_retrieval_head and self.dense_retrieval_head is not None:
+            state_dict = checkpoint['state_dict']
+            model_state_dict = self.state_dict()
+            
+            # Check for missing dense_retrieval_head parameters
+            missing_keys = []
+            for key in model_state_dict.keys():
+                if key.startswith('dense_retrieval_head.') and key not in state_dict:
+                    missing_keys.append(key)
+            
+            # import ipdb; ipdb.set_trace()
+            if missing_keys:
+                print(f"Missing dense_retrieval_head parameters: {missing_keys}")
+                print("Initializing missing parameters randomly...")
+                
+                # Initialize missing parameters randomly
+                for key in missing_keys:
+                    param_shape = model_state_dict[key].shape
+                    param_dtype = model_state_dict[key].dtype
+                    param_device = model_state_dict[key].device
+                    
+                    # Use Xavier uniform initialization for linear layers
+                    if 'weight' in key:
+                        # Xavier uniform initialization
+                        bound = (6.0 / (param_shape[0] + param_shape[1])) ** 0.5
+                        state_dict[key] = torch.empty(param_shape, dtype=param_dtype, device=param_device).uniform_(-bound, bound)
+                    elif 'bias' in key:
+                        # Initialize bias to zero
+                        state_dict[key] = torch.zeros(param_shape, dtype=param_dtype, device=param_device)
+                    else:
+                        # Default random initialization
+                        state_dict[key] = torch.randn(param_shape, dtype=param_dtype, device=param_device) * 0.1
+                
+                # Update the checkpoint with the new parameters
+                checkpoint['state_dict'] = state_dict
+                print("Successfully initialized missing dense_retrieval_head parameters")
+                
+                # Handle optimizer state for new parameters
+                # Option 1: Clear optimizer state entirely (simpler and more reliable)
+                if 'optimizer_states' in checkpoint:
+                    print("Clearing optimizer state due to new parameters...")
+                    checkpoint['optimizer_states'] = []
+                    print("Successfully cleared optimizer state - optimizer will be reinitialized")
+                
+                # Option 2: Try to patch optimizer state (more complex, commented out for now)
+                # if 'optimizer_states' in checkpoint and len(checkpoint['optimizer_states']) > 0:
+                #     print("Handling optimizer state for new parameters...")
+                #     optimizer_state = checkpoint['optimizer_states'][0]
+                #     
+                #     # Get the current model parameters
+                #     current_params = list(self.parameters())
+                #     print(f"Current model has {len(current_params)} parameters")
+                #     
+                #     # Find which parameters are new (dense_retrieval_head parameters)
+                #     new_param_indices = []
+                #     for i, (name, param) in enumerate(self.named_parameters()):
+                #         if name.startswith('dense_retrieval_head.'):
+                #             new_param_indices.append(i)
+                #             print(f"Found new parameter: {name} at index {i}")
+                #     
+                #     print(f"New parameter indices: {new_param_indices}")
+                #     
+                #     # For each new parameter, we need to add empty state to optimizer
+                #     if 'state' in optimizer_state:
+                #         for param_idx in new_param_indices:
+                #             if param_idx not in optimizer_state['state']:
+                #                 optimizer_state['state'][param_idx] = {}
+                #                 print(f"Added empty optimizer state for parameter {param_idx}")
+                #     
+                #     # Update param_groups to include new parameters
+                #     if 'param_groups' in optimizer_state and len(optimizer_state['param_groups']) > 0:
+                #         param_group = optimizer_state['param_groups'][0]
+                #         if 'params' in param_group:
+                #             print(f"Original param_groups params: {param_group['params']}")
+                #             # Add new parameter indices to the param_groups
+                #             existing_params = set(param_group['params'])
+                #             for param_idx in new_param_indices:
+                #                 if param_idx not in existing_params:
+                #                     param_group['params'].append(param_idx)
+                #                     print(f"Added parameter {param_idx} to optimizer param_groups")
+                #             print(f"Updated param_groups params: {param_group['params']}")
+                #     
+                #     checkpoint['optimizer_states'][0] = optimizer_state
+                #     print("Successfully updated optimizer state for new parameters")
+        
         super().on_load_checkpoint(checkpoint)
+

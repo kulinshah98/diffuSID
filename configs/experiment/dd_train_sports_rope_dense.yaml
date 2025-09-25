@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - discrete_diffusion_train_sports_rope
+  # - override /eval: retrieval
+
+model:
+  diffusion_config:
+    num_candidates: 10
+    inference_type: "dense-retrieval"
+
+eval:
+  evaluator:
+    _target_: src.components.eval_metrics.RetrievalEvaluator
+    should_sample_negatives_from_vocab: False
+    placeholder_token_buffer: null
+    top_k_list:
+      - !!int 5
+      - !!int 10
+    metrics:
+      recall:
+        _target_: src.components.eval_metrics.Recall
+      ndcg:
+        _target_: src.components.eval_metrics.NDCG
